@@ -1,4 +1,4 @@
-# pynk // ops
+# AI Organizer
 
 Your personal organizer. Four sections (calendar, habits, tasks, insta), a single "next move" line so you are never staring at a wall of obligations, and AI buttons for meditation nudges, unsticking yourself, and live reads. Built with Next.js, runs on Vercel, stores your data in Upstash Redis, and uses Google Gemini for the AI buttons.
 
