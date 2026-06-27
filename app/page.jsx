@@ -15,6 +15,22 @@ const yesterdayStr = () => {
 };
 const uid = () => Math.random().toString(36).slice(2, 9);
 
+// Turn a Google event into the same shape the app uses for manual events.
+// Crucially, the timezone conversion happens HERE, in the browser, because
+// only the browser knows your real local timezone. `new Date(isoString)`
+// reads Google's timestamp (which includes its zone) and converts it to your
+// local clock, so an event saved as 2pm in another zone shows at your 2pm.
+function normalizeGoogle(ev) {
+  if (ev.allDay) {
+    // all-day events have a plain date and no clock time
+    return { id: `g_${ev.id}`, source: "google", date: ev.startDate, time: "", title: ev.title, allDay: true };
+  }
+  const d = new Date(ev.startDateTime);
+  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return { id: `g_${ev.id}`, source: "google", date, time, title: ev.title, allDay: false };
+}
+
 async function askAI(prompt, { system, search } = {}) {
   try {
     const r = await fetch("/api/ai", {
@@ -168,6 +184,19 @@ function Organizer({ state, setState }) {
   const [now, setNow] = useState(new Date());
   const firstSave = useRef(true);
 
+  // Google Calendar: events live here (separate from saved state), plus a small
+  // status object so the UI always knows whether to show connect / reconnect /
+  // disconnect, or a configuration hint.
+  const [googleEvents, setGoogleEvents] = useState([]);
+  const [gConn, setGConn] = useState({
+    loading: true,
+    connected: false,
+    configured: true,
+    needsReconnect: false,
+    error: "",
+  });
+  const [gNotice, setGNotice] = useState("");
+
   // daily rollover for habits on first mount
   useEffect(() => {
     if (state && state.habits.date !== todayStr()) {
@@ -196,11 +225,56 @@ function Organizer({ state, setState }) {
     return () => clearInterval(t);
   }, []);
 
+  // pull Google events (called on load, and again after connect / disconnect)
+  const loadGoogle = async () => {
+    setGConn((g) => ({ ...g, loading: true }));
+    try {
+      const r = await fetch("/api/google/events");
+      if (r.status === 401) {
+        setGConn({ loading: false, connected: false, configured: true, needsReconnect: false, error: "" });
+        return;
+      }
+      const d = await r.json();
+      setGoogleEvents(Array.isArray(d.events) ? d.events.map(normalizeGoogle) : []);
+      setGConn({
+        loading: false,
+        connected: Boolean(d.connected),
+        configured: d.configured !== false,
+        needsReconnect: Boolean(d.needsReconnect),
+        error: d.error || "",
+      });
+    } catch {
+      setGoogleEvents([]);
+      setGConn({ loading: false, connected: false, configured: true, needsReconnect: false, error: "Could not reach the Google events endpoint." });
+    }
+  };
+
+  useEffect(() => {
+    loadGoogle();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // after the Google round-trip we land back with ?connected=1 or ?gerror=...
+  // show a one-line note, then tidy the address bar
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    if (sp.get("connected")) setGNotice("Google Calendar connected.");
+    else if (sp.get("gerror")) setGNotice("Google connection issue: " + sp.get("gerror"));
+    if (sp.get("connected") || sp.get("gerror")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
+
   if (!state) return null;
 
-  const todaysEvents = state.events
-    .filter((e) => e.date === todayStr())
-    .sort((a, b) => a.time.localeCompare(b.time));
+  // both your hand-typed events and today's Google events, merged and sorted.
+  // because this single list feeds the "next move" logic below, your next move
+  // now reacts to real calendar events too, with no extra wiring.
+  const manualToday = state.events.filter((e) => e.date === todayStr());
+  const googleToday = googleEvents.filter((e) => e.date === todayStr());
+  const todaysEvents = [...manualToday, ...googleToday].sort((a, b) =>
+    (a.time || "00:00").localeCompare(b.time || "00:00")
+  );
 
   const nextDirective = () => {
     const hour = now.getHours();
@@ -236,6 +310,12 @@ function Organizer({ state, setState }) {
           <div className="line">{nextDirective()}<span className="pk-cursor" /></div>
         </div>
 
+        {gNotice && (
+          <p className="pk-sub" style={{ marginTop: 8, marginBottom: 0, color: "var(--cyan, var(--ok))" }}>
+            {gNotice}
+          </p>
+        )}
+
         <div className="pk-tabs">
           {[["calendar", "calendar"], ["habits", "habits"], ["tasks", "tasks"], ["insta", "insta"]].map(([id, label]) => (
             <button key={id} className={`pk-tab ${tab === id ? "on" : ""}`} onClick={() => setTab(id)}>
@@ -244,7 +324,7 @@ function Organizer({ state, setState }) {
           ))}
         </div>
 
-        {tab === "calendar" && <Calendar state={state} setState={setState} todaysEvents={todaysEvents} />}
+        {tab === "calendar" && <Calendar state={state} setState={setState} todaysEvents={todaysEvents} gConn={gConn} reloadGoogle={loadGoogle} />}
         {tab === "habits" && <Habits state={state} setState={setState} />}
         {tab === "tasks" && <Tasks state={state} setState={setState} />}
         {tab === "insta" && <Insta state={state} setState={setState} />}
@@ -255,9 +335,16 @@ function Organizer({ state, setState }) {
 
 // ----- Calendar ------------------------------------------------------------
 
-function Calendar({ state, setState, todaysEvents }) {
+function Calendar({ state, setState, todaysEvents, gConn, reloadGoogle }) {
   const [time, setTime] = useState("");
   const [title, setTitle] = useState("");
+
+  // full-page navigation so the Google redirect chain works cleanly
+  const connectGoogle = () => { window.location.href = "/api/google/connect"; };
+  const disconnectGoogle = async () => {
+    await fetch("/api/google/disconnect", { method: "POST" }).catch(() => {});
+    reloadGoogle();
+  };
 
   const add = () => {
     if (!title.trim()) return;
@@ -271,7 +358,32 @@ function Calendar({ state, setState, todaysEvents }) {
   return (
     <div className="pk-card">
       <h3 className="pk-h">Today</h3>
-      <p className="pk-sub">Log what is happening today. Real Google Calendar sync is the next phase.</p>
+      <p className="pk-sub">Your typed events and your Google Calendar events show here together.</p>
+
+      <div className="pk-row" style={{ marginBottom: 14, gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        {gConn.loading ? (
+          <span className="pk-sub" style={{ margin: 0 }}>checking Google…</span>
+        ) : gConn.configured === false ? (
+          <span className="pk-sub" style={{ margin: 0 }}>Google not set up yet. Add the keys, then redeploy.</span>
+        ) : gConn.connected ? (
+          <>
+            <span className="pk-sub" style={{ margin: 0, color: "var(--ok)" }}>● Google Calendar connected</span>
+            <button className="pk-btn" onClick={disconnectGoogle}>disconnect</button>
+          </>
+        ) : (
+          <>
+            <span className="pk-sub" style={{ margin: 0 }}>
+              {gConn.needsReconnect ? "Google session expired, please reconnect." : "Connect to pull in your real events."}
+            </span>
+            <button className="pk-btn" onClick={connectGoogle}>
+              {gConn.needsReconnect ? "reconnect" : "connect Google"}
+            </button>
+          </>
+        )}
+      </div>
+      {gConn.error && gConn.connected && (
+        <p className="pk-sub" style={{ marginTop: 0, color: "var(--pink)" }}>Google said: {gConn.error}</p>
+      )}
       <div className="pk-row" style={{ marginBottom: 14 }}>
         <input className="pk-in pk-time" type="time" value={time} onChange={(e) => setTime(e.target.value)} />
         <input
@@ -286,9 +398,13 @@ function Calendar({ state, setState, todaysEvents }) {
       {todaysEvents.length === 0 && <p className="pk-sub" style={{ margin: 0 }}>Nothing logged yet. Add your first event.</p>}
       {todaysEvents.map((e) => (
         <div className="pk-item" key={e.id}>
-          <span className="pk-clock" style={{ flex: "0 0 56px" }}>{e.time}</span>
+          <span className="pk-clock" style={{ flex: "0 0 56px" }}>{e.allDay ? "all day" : e.time}</span>
           <span className="pk-tasktext">{e.title}</span>
-          <span className="pk-x" onClick={() => remove(e.id)}>×</span>
+          {e.source === "google" ? (
+            <span className="pk-tag work">google</span>
+          ) : (
+            <span className="pk-x" onClick={() => remove(e.id)}>×</span>
+          )}
         </div>
       ))}
     </div>
