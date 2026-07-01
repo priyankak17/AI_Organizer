@@ -317,7 +317,7 @@ function Organizer({ state, setState }) {
         )}
 
         <div className="pk-tabs">
-          {[["calendar", "calendar"], ["habits", "habits"], ["tasks", "tasks"], ["insta", "insta"]].map(([id, label]) => (
+          {[["calendar", "calendar"], ["habits", "habits"], ["tasks", "tasks"], ["insta", "insta"], ["tree", "study tree"]].map(([id, label]) => (
             <button key={id} className={`pk-tab ${tab === id ? "on" : ""}`} onClick={() => setTab(id)}>
               {label}
             </button>
@@ -328,6 +328,7 @@ function Organizer({ state, setState }) {
         {tab === "habits" && <Habits state={state} setState={setState} />}
         {tab === "tasks" && <Tasks state={state} setState={setState} />}
         {tab === "insta" && <Insta state={state} setState={setState} />}
+        {tab === "tree" && <StudyTree state={state} setState={setState} />}
       </div>
     </div>
   );
@@ -647,6 +648,200 @@ function Insta({ state, setState }) {
         {ideas && <div className="pk-ai" dangerouslySetInnerHTML={{ __html: linkify(ideas) }} />}
         <p className="pk-note">Growth tactics change constantly, so treat these as starting points, not rules.</p>
       </div>
+    </>
+  );
+}
+
+
+// ----- Study Tree ----------------------------------------------------------
+// A growing library of what you're learning. Roots are the basics every
+// ML/CV engineer needs; branches are the advanced topics. Each topic holds
+// links you paste in. Data lives in state.tree, so it saves automatically
+// like everything else. Manual sorting for now; an AI "sort my dumped links"
+// button can be added later by adding an `inbox` array — the link shape below
+// (an object, not a bare string) is already ready for that.
+
+function defaultTree() {
+  return {
+    groups: [
+      {
+        id: "basics",
+        label: "Basics · roots",
+        topics: [
+          { id: "linalg", label: "Linear Algebra", links: [] },
+          { id: "stats", label: "Statistics", links: [] },
+          { id: "tensors", label: "Tensor Multiplication", links: [] },
+          { id: "imgclass", label: "Image Classification", links: [] },
+        ],
+      },
+      {
+        id: "advanced",
+        label: "Advanced · branches",
+        topics: [
+          { id: "seq", label: "Sequential Modelling", links: [] },
+          { id: "temporal", label: "Temporal Modelling", links: [] },
+          { id: "attention", label: "Attention", links: [] },
+          { id: "zeroshot", label: "Zero-Shot", links: [] },
+          { id: "crossmodal", label: "Cross-Modal Optimization", links: [] },
+          { id: "cv", label: "CV Algorithms", links: [] },
+        ],
+      },
+    ],
+  };
+}
+
+function StudyTree({ state, setState }) {
+  // Old saved data won't have a tree yet. This seeds it once, the first time
+  // you open the tab, then leaves it alone. This one guard is why the tab
+  // never crashes on an account that existed before you added this feature.
+  useEffect(() => {
+    if (!state.tree) setState((s) => (s.tree ? s : { ...s, tree: defaultTree() }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const tree = state.tree || { groups: [] };
+
+  const [openTopic, setOpenTopic] = useState(null); // which topic is expanded
+  const [draft, setDraft] = useState({});           // {topicId: {url, note}} being typed
+  const [newTopic, setNewTopic] = useState({});     // {groupId: label} being typed
+
+  const save = (next) => setState((s) => ({ ...s, tree: next }));
+
+  const totalLinks = tree.groups.reduce(
+    (n, g) => n + g.topics.reduce((m, t) => m + t.links.length, 0),
+    0
+  );
+
+  const addLink = (gid, tid) => {
+    const d = draft[tid] || {};
+    const url = (d.url || "").trim();
+    if (!url) return;
+    const link = { id: uid(), url, note: (d.note || "").trim(), added: todayStr() };
+    save({
+      ...tree,
+      groups: tree.groups.map((g) =>
+        g.id !== gid ? g : { ...g, topics: g.topics.map((t) => (t.id !== tid ? t : { ...t, links: [link, ...t.links] })) }
+      ),
+    });
+    setDraft((x) => ({ ...x, [tid]: { url: "", note: "" } }));
+  };
+
+  const removeLink = (gid, tid, lid) => {
+    save({
+      ...tree,
+      groups: tree.groups.map((g) =>
+        g.id !== gid ? g : { ...g, topics: g.topics.map((t) => (t.id !== tid ? t : { ...t, links: t.links.filter((l) => l.id !== lid) })) }
+      ),
+    });
+  };
+
+  const addTopic = (gid) => {
+    const label = (newTopic[gid] || "").trim();
+    if (!label) return;
+    save({
+      ...tree,
+      groups: tree.groups.map((g) => (g.id !== gid ? g : { ...g, topics: [...g.topics, { id: uid(), label, links: [] }] })),
+    });
+    setNewTopic((x) => ({ ...x, [gid]: "" }));
+  };
+
+  const removeTopic = (gid, tid) => {
+    save({
+      ...tree,
+      groups: tree.groups.map((g) => (g.id !== gid ? g : { ...g, topics: g.topics.filter((t) => t.id !== tid) })),
+    });
+  };
+
+  return (
+    <>
+      <div className="pk-card">
+        <h3 className="pk-h">Study tree</h3>
+        <p className="pk-sub">
+          Your growing map of what a multimodal ML / CV engineer needs. Roots are the basics, branches are the advanced
+          topics. Tap a topic, paste a link, and it lives there. {totalLinks} link{totalLinks === 1 ? "" : "s"} saved so far.
+        </p>
+      </div>
+
+      {tree.groups.map((g) => (
+        <div className="pk-card" key={g.id}>
+          <h3 className="pk-h" style={{ color: g.id === "basics" ? "var(--ok)" : "var(--pinkSoft)" }}>{g.label}</h3>
+
+          {g.topics.map((t) => {
+            const isOpen = openTopic === t.id;
+            const d = draft[t.id] || {};
+            return (
+              <div key={t.id} style={{ borderBottom: "1px solid var(--line)", padding: "10px 0" }}>
+                <div
+                  className="pk-row"
+                  style={{ justifyContent: "space-between", cursor: "pointer" }}
+                  onClick={() => setOpenTopic(isOpen ? null : t.id)}
+                >
+                  <span className="pk-tasktext" style={{ fontWeight: 600 }}>
+                    {isOpen ? "▾" : "▸"} {t.label}
+                  </span>
+                  <span className="pk-tag work" style={{ flex: "0 0 auto" }}>{t.links.length}</span>
+                </div>
+
+                {isOpen && (
+                  <div style={{ marginTop: 10, paddingLeft: 6 }}>
+                    <div className="pk-row" style={{ marginBottom: 8 }}>
+                      <input
+                        className="pk-in"
+                        placeholder="paste a link (https://...)"
+                        value={d.url || ""}
+                        onChange={(e) => setDraft((x) => ({ ...x, [t.id]: { ...d, url: e.target.value } }))}
+                        onKeyDown={(e) => e.key === "Enter" && addLink(g.id, t.id)}
+                      />
+                    </div>
+                    <div className="pk-row" style={{ marginBottom: 12 }}>
+                      <input
+                        className="pk-in"
+                        placeholder="note (optional)"
+                        value={d.note || ""}
+                        onChange={(e) => setDraft((x) => ({ ...x, [t.id]: { ...d, note: e.target.value } }))}
+                        onKeyDown={(e) => e.key === "Enter" && addLink(g.id, t.id)}
+                      />
+                      <button className="pk-btn" onClick={() => addLink(g.id, t.id)}>add</button>
+                    </div>
+
+                    {t.links.length === 0 && <p className="pk-sub" style={{ margin: 0 }}>No links yet. Paste your first one.</p>}
+                    {t.links.map((l) => (
+                      <div className="pk-item" key={l.id}>
+                        <span className="pk-tasktext" style={{ wordBreak: "break-all" }}>
+                          <a href={l.url} target="_blank" rel="noopener noreferrer">{l.url}</a>
+                          {l.note ? <span style={{ color: "var(--muted)" }}> · {l.note}</span> : null}
+                        </span>
+                        <span className="pk-clock" style={{ flex: "0 0 auto" }}>{l.added}</span>
+                        <span className="pk-x" onClick={() => removeLink(g.id, t.id, l.id)}>×</span>
+                      </div>
+                    ))}
+
+                    <div style={{ marginTop: 10 }}>
+                      <span
+                        onClick={() => removeTopic(g.id, t.id)}
+                        style={{ fontSize: 11, fontFamily: "var(--mono)", color: "var(--muted)", cursor: "pointer" }}
+                      >
+                        delete topic
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          <div className="pk-row" style={{ marginTop: 14 }}>
+            <input
+              className="pk-in"
+              placeholder="add a topic to this branch"
+              value={newTopic[g.id] || ""}
+              onChange={(e) => setNewTopic((x) => ({ ...x, [g.id]: e.target.value }))}
+              onKeyDown={(e) => e.key === "Enter" && addTopic(g.id)}
+            />
+            <button className="pk-btn cy" onClick={() => addTopic(g.id)}>+ topic</button>
+          </div>
+        </div>
+      ))}
     </>
   );
 }
