@@ -6,6 +6,9 @@ Built with Next.js, runs on Vercel, stores data in Upstash Redis, and uses Googl
 
 **Live demo:** https://ai-organizer-kappa.vercel.app/
 
+**New feature addition:** https://ai-organizer-kappa.vercel.app/tree
+Experience Neural tree, where you can dump your saved links, and AI sorts them into branches(advanced topics) and roots(Basic topics)
+
 > Heads up: the demo is one person's instance behind a password. To actually use it, run your own copy with your own free keys. The whole point is that it is yours. The steps below take about ten minutes.
 
 ## What it does
